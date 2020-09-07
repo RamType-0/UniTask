@@ -14,7 +14,8 @@ Provides an efficient allocation free async/await integration to Unity.
 * Highly compatible behaviour with Task/ValueTask/IValueTaskSource
 
 Techinical details, see blog post: [UniTask v2 — Zero Allocation async/await for Unity, with Asynchronous LINQ
-](https://medium.com/@neuecc/unitask-v2-zero-allocation-async-await-for-unity-with-asynchronous-linq-1aa9c96aa7dd)
+](https://medium.com/@neuecc/unitask-v2-zero-allocation-async-await-for-unity-with-asynchronous-linq-1aa9c96aa7dd)  
+Advanced tips, see blog post: [Extends UnityWebRequest via async decorator pattern — Advanced Techniques of UniTask](https://medium.com/@neuecc/extends-unitywebrequest-via-async-decorator-pattern-advanced-techniques-of-unitask-ceff9c5ee846)
 
 <!-- START doctoc generated TOC please keep comment here to allow auto update -->
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
@@ -32,8 +33,12 @@ Techinical details, see blog post: [UniTask v2 — Zero Allocation async/await f
 - [Awaitable Events](#awaitable-events)
 - [Channel](#channel)
 - [For Unit Testing](#for-unit-testing)
+- [ThreadPool limitation](#threadpool-limitation)
+- [IEnumerator.ToUniTask limitation](#ienumeratortounitask-limitation)
+- [For UnityEditor](#for-unityeditor)
 - [Compare with Standard Task API](#compare-with-standard-task-api)
 - [Pooling Configuration](#pooling-configuration)
+- [Allocation on Profiler](#allocation-on-profiler)
 - [UniTaskSynchronizationContext](#unitasksynchronizationcontext)
 - [API References](#api-references)
 - [UPM Package](#upm-package)
@@ -150,6 +155,8 @@ UniTask provides three pattern of extension methods.
 `WithCancellation` is a simple version of `ToUniTask`, both returns `UniTask`. Details of cancellation, see: [Cancellation and Exception handling](#cancellation-and-exception-handling) section.
 
 > Note: WithCancellation is returned from native timing of PlayerLoop but ToUniTask is returned from specified PlayerLoopTiming. Details of timing, see: [PlayerLoop](#playerloop) section.
+
+> Note: AssetBundleRequest has `asset` and `allAssets`, in default await returns `asset`. If you want to get `allAssets`, you can use `AwaitForAllAssets()` method.
 
 The type of `UniTask` can use utility like `UniTask.WhenAll`, `UniTask.WhenAny`. It is like Task.WhenAll/WhenAny but return type is more useful, returns value tuple so can deconsrtuct each result and pass multiple type.
 
@@ -486,6 +493,8 @@ await UniTask.WhenAll(
     transform.DOScale(10, 3).WithCancellation(ct));
 ```
 
+DOTween support's default behaviour(`await`, `WithCancellation`, `ToUniTask`) awaits tween is killed. It works both Complete(true/false) and Kill(true/false). But if you want to tween reuse(`SetAutoKill(false)`), it does not work you expected. Or, if you want to await for another timing, the following extension methods exist in Tween, `AwaitForComplete`, `AwaitForPause`, `AwaitForPlay`, `AwaitForRewind`, `AwaitForStepComplete`.
+
 AsyncEnumerable and Async LINQ
 ---
 Unity 2020.2.0a12 supports C# 8.0 so you can use `await foreach`. This is the new Update notation in async era.
@@ -775,6 +784,26 @@ public IEnumerator DelayIgnore() => UniTask.ToCoroutine(async () =>
 
 UniTask itself's unit test is written by Unity Test Runner and [Cysharp/RuntimeUnitTestToolkit](https://github.com/Cysharp/RuntimeUnitTestToolkit) to check on CI and IL2CPP working.
 
+ThreadPool limitation
+---
+Most UniTask methods run in a single thread (PlayerLoop), but only `UniTask.Run` and `UniTask.SwitchToThreadPool` run on a thread pool. If you use a thread pool, it won't work with WebGL and so on.
+
+`UniTask.Run` will be deprecated in the future (marked with an Obsolete) and only `RunOnThreadPool` will be used. Also, if you use `UniTask.Run`, consider whether you can use `UniTask.Create` or `UniTask.Void`.
+
+IEnumerator.ToUniTask limitation
+---
+You can convert coroutine(IEnumerator) to UniTask(or await directly) but has some limitations.
+
+* `WaitForEndOfFrame`/`WaitForFixedUpdate` is not supported, used `yield return null` instead.
+* Consuming loop timing is not same as StartCoroutine, it is used specified PlayerLoopTiming, and default's `PlayerLoopTiming.Update` is run before MonoBehaviour's Update and StartCoroutine's loop.
+
+For UnityEditor
+---
+UniTask can run on Unity Edtitor like Editor Coroutine. However, there are some limitations.
+
+* Delay, DelayFrame is not work correctly because can not get deltaTime in editor. Return the result of the await immediately; you can use `DelayType.Realtime` to wait for the right time.
+* All PlayerLoopTiming run on timing, `EditorApplication.update`.
+
 Compare with Standard Task API
 ---
 UniTask has many standard Task-like APIs. This table shows what is the alternative apis.
@@ -832,7 +861,15 @@ foreach (var (type, size) in TaskPool.GetCacheSizeInfo())
 }
 ```
 
-> In UnityEditor profiler shows allocation of compiler generated AsyncStateMachine but it only occurs in debug(development) build. C# Compiler generate AsyncStateMachine as class on Debug build and as struct on Release build.
+Allocation on Profiler
+---
+In UnityEditor profiler shows allocation of compiler generated AsyncStateMachine but it only occurs in debug(development) build. C# Compiler generate AsyncStateMachine as class on Debug build and as struct on Release build.
+
+After Unity 2020.1 supports Code Optimization option on UnityEditor(right, footer).
+
+![](https://user-images.githubusercontent.com/46207/89967342-2f944600-dc8c-11ea-99fc-0b74527a16f6.png)
+
+You can change C# compiler optimization to release, it removes AsyncStateMachine allocation. Andalso optimization option can set via `Compilation.CompilationPipeline-codeOptimization`, and `Compilation.CodeOptimization`.
 
 UniTaskSynchronizationContext
 ---
@@ -869,7 +906,7 @@ After Unity 2019.3.4f1, Unity 2020.1a21, that support path query parameter of gi
 
 or add `"com.cysharp.unitask": "https://github.com/Cysharp/UniTask.git?path=src/UniTask/Assets/Plugins/UniTask"` to `Packages/manifest.json`.
 
-If you want to set a target version, UniTask is using `*.*.*` release tag so you can specify a version like `#2.0.24`. For example `https://github.com/Cysharp/UniTask.git?path=src/UniTask/Assets/Plugins/UniTask#2.0.24`.
+If you want to set a target version, UniTask is using `*.*.*` release tag so you can specify a version like `#2.0.31`. For example `https://github.com/Cysharp/UniTask.git?path=src/UniTask/Assets/Plugins/UniTask#2.0.31`.
 
 ### Install via OpenUPM
 

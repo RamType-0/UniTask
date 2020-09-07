@@ -35,7 +35,8 @@ namespace Cysharp.Threading.Tasks
         sealed class EnumeratorPromise : IUniTaskSource, IPlayerLoopItem, ITaskPoolNode<EnumeratorPromise>
         {
             static TaskPool<EnumeratorPromise> pool;
-            public EnumeratorPromise NextNode { get; set; }
+            EnumeratorPromise nextNode;
+            public ref EnumeratorPromise NextNode => ref nextNode;
 
             static EnumeratorPromise()
             {
@@ -44,6 +45,7 @@ namespace Cysharp.Threading.Tasks
 
             IEnumerator innerEnumerator;
             CancellationToken cancellationToken;
+            int initialFrame;
 
             UniTaskCompletionSourceCore<object> core;
 
@@ -66,10 +68,13 @@ namespace Cysharp.Threading.Tasks
 
                 result.innerEnumerator = ConsumeEnumerator(innerEnumerator);
                 result.cancellationToken = cancellationToken;
+                result.initialFrame = -1;
 
                 PlayerLoopHelper.AddAction(timing, result);
 
                 token = result.core.Version;
+
+                result.MoveNext(); // run immediately.
                 return result;
             }
 
@@ -106,6 +111,19 @@ namespace Cysharp.Threading.Tasks
                 {
                     core.TrySetCanceled(cancellationToken);
                     return false;
+                }
+
+                if (initialFrame == -1)
+                {
+                    // Time can not touch in threadpool.
+                    if (PlayerLoopHelper.IsMainThread)
+                    {
+                        initialFrame = Time.frameCount;
+                    }
+                }
+                else if (initialFrame == Time.frameCount)
+                {
+                    return true; // already executed in first frame, skip.
                 }
 
                 try
@@ -145,11 +163,10 @@ namespace Cysharp.Threading.Tasks
                     {
                         yield return null;
                     }
-                    else if (current is CustomYieldInstruction)
+                    else if (current is CustomYieldInstruction cyi)
                     {
                         // WWW, WaitForSecondsRealtime
-                        var e2 = UnwrapWaitCustomYieldInstruction((CustomYieldInstruction)current);
-                        while (e2.MoveNext())
+                        while (cyi.keepWaiting)
                         {
                             yield return null;
                         }
@@ -194,26 +211,17 @@ namespace Cysharp.Threading.Tasks
                 }
             }
 
-            // WWW and others as CustomYieldInstruction.
-            static IEnumerator UnwrapWaitCustomYieldInstruction(CustomYieldInstruction yieldInstruction)
-            {
-                while (yieldInstruction.keepWaiting)
-                {
-                    yield return null;
-                }
-            }
-
             static readonly FieldInfo waitForSeconds_Seconds = typeof(WaitForSeconds).GetField("m_Seconds", BindingFlags.Instance | BindingFlags.GetField | BindingFlags.NonPublic);
 
             static IEnumerator UnwrapWaitForSeconds(WaitForSeconds waitForSeconds)
             {
                 var second = (float)waitForSeconds_Seconds.GetValue(waitForSeconds);
-                var startTime = DateTimeOffset.UtcNow;
+                var elapsed = 0.0f;
                 while (true)
                 {
                     yield return null;
 
-                    var elapsed = (DateTimeOffset.UtcNow - startTime).TotalSeconds;
+                    elapsed += Time.deltaTime;
                     if (elapsed >= second)
                     {
                         break;
